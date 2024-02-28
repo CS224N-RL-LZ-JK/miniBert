@@ -39,28 +39,35 @@ class AdamW(Optimizer):
                 if grad.is_sparse:
                     raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
 
-                # State should be stored in this dictionary.
                 state = self.state[p]
+                if "step" not in state:
+                    state["step"] = 0
+                if "m" not in state:
+                    state["m"] = torch.zeros_like(p.data)
+                if "v" not in state:
+                    state["v"] = torch.zeros_like(p.data)
 
-                # Access hyperparameters from the `group` dictionary.
-                alpha = group["lr"]
+                m, v = state["m"], state["v"]
+                state["step"] += 1
 
-                # Complete the implementation of AdamW here, reading and saving
-                # your state in the `state` dictionary above.
-                # The hyperparameters can be read from the `group` dictionary
-                # (they are lr, betas, eps, weight_decay, as saved in the constructor).
-                #
-                # To complete this implementation:
-                # 1. Update the first and second moments of the gradients.
-                # 2. Apply bias correction
-                #    (using the "efficient version" given in https://arxiv.org/abs/1412.6980;
-                #     also given in the pseudo-code in the project description).
-                # 3. Update parameters (p.data).
-                # 4. Apply weight decay after the main gradient-based updates.
-                # Refer to the default project handout for more details.
+                beta1, beta2 = group["betas"]
+                eps = group["eps"]
+                weight_decay = group["weight_decay"]
+                lr = group["lr"]
 
-                ### TODO
-                raise NotImplementedError
+                m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
+                bias_correction1 = 1 - beta1 ** state["step"]
+                bias_correction2 = 1 - beta2 ** state["step"]
+                m_hat = m / bias_correction1
+                v_hat = v / bias_correction2
+
+                if weight_decay > 0:
+                    p.data.add_(p.data, alpha=-lr * weight_decay)
+
+                p.data.addcdiv_(m_hat, v_hat.sqrt().add_(eps), value=-lr)
 
         return loss
+
+
