@@ -102,6 +102,7 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        
         pooled_output = outputs['pooler_output']
         return self.sentiment_classifier(pooled_output)
 
@@ -130,7 +131,9 @@ class MultitaskBERT(nn.Module):
         outputs_2 = self.bert(input_ids=input_ids_2, attention_mask=attention_mask_2)
         outputs_1 = outputs_1['pooler_output']
         outputs_2 = outputs_2['pooler_output']
-        return self.similarity_classifier(outputs_1 * outputs_2)
+        combined_features = torch.cat((outputs_1, outputs_2, torch.abs(outputs_1 - outputs_2), outputs_1 * outputs_2), dim=1)
+
+        return self.similarity_classifier(combined_features)
 
 
 

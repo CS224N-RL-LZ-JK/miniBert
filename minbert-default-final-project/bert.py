@@ -245,3 +245,4 @@ class BertModel(BertPreTrainedModel):
     first_tk = self.pooler_af(first_tk)
 
     return {'last_hidden_state': sequence_output, 'pooler_output': first_tk}
+
