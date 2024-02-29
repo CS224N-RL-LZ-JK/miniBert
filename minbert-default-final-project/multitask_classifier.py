@@ -57,9 +57,9 @@ class MultitaskBERT(nn.Module):
     '''
     This module should use BERT for 3 tasks:
 
-    - Sentiment classification (predict_sentiment)
-    - Paraphrase detection (predict_paraphrase)
-    - Semantic Textual Similarity (predict_similarity)
+    - Sentiment classification (predict_sentiment): Categorize sentences into one of five sentiment classes.
+    - Paraphrase Detection: Determine whether two sentences are paraphrases of each other.
+    - Semantic Textual Similarity: Assess the similarity between two sentences on a continuous scale.
     '''
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
@@ -71,8 +71,9 @@ class MultitaskBERT(nn.Module):
             elif config.option == 'finetune':
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
-        ### TODO
-        raise NotImplementedError
+        self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
+        self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
+        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
 
 
     def forward(self, input_ids, attention_mask):
@@ -81,8 +82,17 @@ class MultitaskBERT(nn.Module):
         # Here, you can start by just returning the embeddings straight from BERT.
         # When thinking of improvements, you can later try modifying this
         # (e.g., by adding other layers).
-        ### TODO
-        raise NotImplementedError
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        pooled_output = outputs['pooler_output']
+        # additional layers
+        if self.task == 'sentiment':
+            return self.sentiment_classifier(pooled_output)
+        elif self.task == 'paraphrase':
+            return self.paraphrase_classifier(pooled_output)
+        elif self.task == 'similarity':
+            return self.similarity_classifier(pooled_output)
+        else:
+            return pooled_output
 
 
     def predict_sentiment(self, input_ids, attention_mask):
@@ -91,8 +101,9 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        ### TODO
-        raise NotImplementedError
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        pooled_output = outputs['pooler_output']
+        return self.sentiment_classifier(pooled_output)
 
 
     def predict_paraphrase(self,
@@ -102,8 +113,11 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
         '''
-        ### TODO
-        raise NotImplementedError
+        outputs_1 = self.bert(input_ids=input_ids_1, attention_mask=attention_mask_1)
+        outputs_2 = self.bert(input_ids=input_ids_2, attention_mask=attention_mask_2)
+        outputs_1 = outputs_1['pooler_output']
+        outputs_2 = outputs_2['pooler_output']
+        return self.paraphrase_classifier(outputs_1 * outputs_2)
 
 
     def predict_similarity(self,
@@ -112,8 +126,11 @@ class MultitaskBERT(nn.Module):
         '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
         Note that your output should be unnormalized (a logit).
         '''
-        ### TODO
-        raise NotImplementedError
+        outputs_1 = self.bert(input_ids=input_ids_1, attention_mask=attention_mask_1)
+        outputs_2 = self.bert(input_ids=input_ids_2, attention_mask=attention_mask_2)
+        outputs_1 = outputs_1['pooler_output']
+        outputs_2 = outputs_2['pooler_output']
+        return self.similarity_classifier(outputs_1 * outputs_2)
 
 
 
