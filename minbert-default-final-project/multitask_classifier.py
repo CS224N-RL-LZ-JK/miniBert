@@ -76,7 +76,7 @@ class MultitaskBERT(nn.Module):
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
 
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
-        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
+        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*4, 1)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -171,9 +171,13 @@ class MultitaskBERT(nn.Module):
         '''
         outputs_1 = self.bert(input_ids=input_ids_1, attention_mask=attention_mask_1)
         outputs_2 = self.bert(input_ids=input_ids_2, attention_mask=attention_mask_2)
+
         outputs_1 = outputs_1['pooler_output']
         outputs_2 = outputs_2['pooler_output']
-        return self.paraphrase_classifier(outputs_1 * outputs_2)
+
+        outputs = torch.cat((outputs_1, outputs_2), dim=1)
+
+        return self.paraphrase_classifier(outputs)
 
 
     def predict_similarity(self,
