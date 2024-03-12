@@ -11,6 +11,8 @@ Of note are:
 Running `python multitask_classifier.py` trains and tests your MultitaskBERT and
 writes all required submission files.
 '''
+from itertools import cycle
+
 
 import random, numpy as np, argparse
 from types import SimpleNamespace
@@ -120,7 +122,7 @@ class MultitaskBERT(nn.Module):
         '''
         outputs_anchor = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         outputs_dropout = self.dropout(outputs_anchor['pooler_output'])
-        loss = custom_loss(outputs_anchor, outputs_dropout)
+        loss = self.custom_loss(outputs_anchor, outputs_dropout)
 
         return loss
     
@@ -144,10 +146,14 @@ class MultitaskBERT(nn.Module):
         # Compute cosine similarity between normalized embeddings
         cosine_similarity = torch.matmul(embeddings_1_normalized, embeddings_2_normalized.t()) / temperature
 
-        # Compute loss
-        # For each embedding, maximize the similarity with the other embedding
-        # and minimize similarity with all other embeddings in the batch
-        loss = -torch.diag(cosine_similarity).mean()
+        # Compute the numerator
+        numerator = torch.exp(torch.diag(cosine_similarity))
+
+        # Compute the denominator
+        denominator = torch.exp(cosine_similarity).sum(dim=1)
+
+        # Compute the loss
+        loss = -torch.log(numerator / denominator).mean()
 
         return loss
 
@@ -199,17 +205,15 @@ def save_model(model, optimizer, args, config, filepath):
 
 
 def train_multitask(args):
-    '''Train MultitaskBERT.
-
-    Currently only trains on SST dataset. The way you incorporate training examples
-    from other datasets into the training procedure is up to you. To begin, take a
-    look at test_multitask below to see how you can use the custom torch `Dataset`s
-    in datasets.py to load in examples from the Quora and SemEval datasets.
-    '''
+    '''Train MultitaskBERT.'''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
+
+    #train (8,544 examples)
+    #dev (1,101 examples)
+    #test (2,210 examples)
     sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
-    sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
+    sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='dev')
 
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -219,21 +223,32 @@ def train_multitask(args):
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sst_dev_data.collate_fn)
     
-    para_test_data = SentencePairTestDataset(para_test_data, args)
+    #train (141,506 examples)
+    #dev (20,215 examples)
+    #test (40,431 examples)
+    para_train_data = SentencePairTestDataset(para_train_data, args)
     para_dev_data = SentencePairDataset(para_dev_data, args)
 
-    para_test_dataloader = DataLoader(para_test_data, shuffle=True, batch_size=args.batch_size,
-                                          collate_fn=para_test_data.collate_fn)
+    para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
+                                          collate_fn=para_train_data.collate_fn)
     para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
                                          collate_fn=para_dev_data.collate_fn)
 
-    sts_test_data = SentencePairTestDataset(sts_test_data, args)
+    #train (6,041 examples)
+    #dev (864 examples)
+    #test (1,726 examples)
+    sts_train_data = SentencePairTestDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
-    sts_test_dataloader = DataLoader(sts_test_data, shuffle=True, batch_size=args.batch_size,
-                                         collate_fn=sts_test_data.collate_fn)
+    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
+                                         collate_fn=sts_train_data.collate_fn)
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                         collate_fn=sts_dev_data.collate_fn)
+
+    sst_iter = cycle(sst_train_dataloader)
+    sts_iter = cycle(sts_train_dataloader)
+    para_iter = para_train_dataloader
+    num_batches = len(para_train_dataloader)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -249,47 +264,108 @@ def train_multitask(args):
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_acc = 0
+    best_dev_acc_para, best_dev_acc_sst, best_dev_acc_sts = 0, 0, 0
+
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
-        num_batches = 0
-        for batch in tqdm(sst_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
-            b_ids, b_mask, b_labels = (batch['token_ids'],
-                                       batch['attention_mask'], batch['labels'])
+        for _ in range(num_batches):
+            sst = next(sst_iter)
+            sts = next(sts_iter)
+            para = next(para_iter)
+            optimizer.zero_grad()
+
+            #STS TRAINING
+            b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (
+                    sts["token_ids_1"],
+                    sts["attention_mask_1"],
+                    sts["token_ids_2"],
+                    sts["attention_mask_2"],
+                    sts["labels"],
+                )
+            
+            b_ids_1 = b_ids_1.to(device)
+            b_mask_1 = b_mask_1.to(device)
+
+            b_ids_2 = b_ids_2.to(device)
+            b_mask_2 = b_mask_2.to(device)
+
+            b_labels = b_labels.to(device)
+
+            logits = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+            b_labels = b_labels.to(torch.float32)
+            sts_loss = F.mse_loss(logits, b_labels.view(-1))
+
+            b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (
+                    para["token_ids_1"],
+                    para["attention_mask_1"],
+                    para["token_ids_2"],
+                    para["attention_mask_2"],
+                    para["labels"],
+                )
+
+            b_ids_1 = b_ids_1.to(device)
+            b_mask_1 = b_mask_1.to(device)
+
+            b_ids_2 = b_ids_2.to(device)
+            b_mask_2 = b_mask_2.to(device)
+
+            b_labels = b_labels.to(device)
+
+            logits = model.predict_paraphrase(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+            para_loss = F.cross_entropy(logits, b_labels.view(-1))
+
+            #SST TRAINING
+            b_ids, b_mask, b_labels = (sst["token_ids"], sst["attention_mask"], sst["labels"])
 
             b_ids = b_ids.to(device)
             b_mask = b_mask.to(device)
             b_labels = b_labels.to(device)
 
-            optimizer.zero_grad()
             logits = model.predict_sentiment(b_ids, b_mask)
+            #calculate contrastive loss between two embeddings
+            custom_loss = model.compute_simsce(b_ids, b_mask)
             
+            sst_loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+            
+            #need to tune the weights for each dataset
+            #randomizer with two free params
+            weight_sst = 0.5
+            weight_sts = 0.3
+            weight_para = 0.2
+            
+            full_loss = weight_sst * (sst_loss + custom_loss) + weight_sts * sts_loss + weight_para * para_loss 
+            
+            #clip gradients incase of exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
-            #calculate individual loss
-            loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
-            #calculate custom loss between two embeddings
-            loss += model.compute_simsce(b_ids, b_mask)
-
-
-            loss.backward()
+            full_loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
-            num_batches += 1
+            train_loss += full_loss.item()
 
         train_loss = train_loss / (num_batches)
 
-        train_acc, train_f1, *_ = model_eval_sst(sst_train_dataloader, model, device)
-        dev_acc, dev_f1, *_ = model_eval_sst(sst_dev_dataloader, model, device)
-        train_acc
+        # Evaluate and save the model every epoch.
+        para_train_acc, _, _, sst_train_acc, _, _, sts_train_acc, _, _ = model_eval_multitask(
+            sst_train_dataloader, para_train_dataloader, sts_train_dataloader, model, device
+        )
+
+        para_dev_acc, _, _, sst_dev_acc, _, _, sts_dev_acc, _, _ = model_eval_multitask(
+            sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, model, device
+        )
+        
+       
+       
+        train_acc = (sst_train_acc + para_train_acc + sts_train_acc)/3
+        dev_acc = (sst_dev_acc + para_dev_acc + sts_dev_acc)/3
 
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
-            save_model(model, optimizer, args, config, args.filepath)
+            save_model(model, optimizer, args, config, args.filepath)            
 
         print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
 
