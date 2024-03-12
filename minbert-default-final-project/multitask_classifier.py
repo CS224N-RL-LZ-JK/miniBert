@@ -74,6 +74,7 @@ class MultitaskBERT(nn.Module):
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
         self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
 
     def forward(self, input_ids, attention_mask):
@@ -95,6 +96,9 @@ class MultitaskBERT(nn.Module):
             return pooled_output
 
 
+
+    
+
     def predict_sentiment(self, input_ids, attention_mask):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
         There are 5 sentiment classes:
@@ -102,9 +106,50 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        
-        pooled_output = outputs['pooler_output']
-        return self.sentiment_classifier(pooled_output)
+
+        pooled_output_anchor = outputs['pooler_output']
+
+        return self.sentiment_classifier(pooled_output_anchor)
+    
+
+    def compute_simsce(self, input_ids, attention_mask):
+        '''Given a batch of sentences, outputs logits for classifying sentiment.
+        There are 5 sentiment classes:
+        (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
+        Thus, your output should contain 5 logits for each sentence.
+        '''
+        outputs_anchor = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        outputs_dropout = self.dropout(outputs_anchor['pooler_output'])
+        loss = custom_loss(outputs_anchor, outputs_dropout)
+
+        return loss
+    
+    def custom_loss(embeddings_1, embeddings_2, temperature=0.05):
+        """
+        Computes the unsupervised SimCSE loss between two sets of embeddings.
+
+        Args:
+        - embeddings_1 (torch.Tensor): Tensor containing the first set of embeddings.
+        - embeddings_2 (torch.Tensor): Tensor containing the second set of embeddings.
+        - temperature (float): Scaling factor for the cosine similarity. Default is 0.05.
+
+        Returns:
+        - loss (torch.Tensor): SimCSE loss.
+        """
+
+        # Normalize embeddings
+        embeddings_1_normalized = torch.nn.functional.normalize(embeddings_1, p=2, dim=-1)
+        embeddings_2_normalized = torch.nn.functional.normalize(embeddings_2, p=2, dim=-1)
+
+        # Compute cosine similarity between normalized embeddings
+        cosine_similarity = torch.matmul(embeddings_1_normalized, embeddings_2_normalized.t()) / temperature
+
+        # Compute loss
+        # For each embedding, maximize the similarity with the other embedding
+        # and minimize similarity with all other embeddings in the batch
+        loss = -torch.diag(cosine_similarity).mean()
+
+        return loss
 
 
     def predict_paraphrase(self,
@@ -173,6 +218,22 @@ def train_multitask(args):
                                       collate_fn=sst_train_data.collate_fn)
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sst_dev_data.collate_fn)
+    
+    para_test_data = SentencePairTestDataset(para_test_data, args)
+    para_dev_data = SentencePairDataset(para_dev_data, args)
+
+    para_test_dataloader = DataLoader(para_test_data, shuffle=True, batch_size=args.batch_size,
+                                          collate_fn=para_test_data.collate_fn)
+    para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
+                                         collate_fn=para_dev_data.collate_fn)
+
+    sts_test_data = SentencePairTestDataset(sts_test_data, args)
+    sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
+
+    sts_test_dataloader = DataLoader(sts_test_data, shuffle=True, batch_size=args.batch_size,
+                                         collate_fn=sts_test_data.collate_fn)
+    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
+                                        collate_fn=sts_dev_data.collate_fn)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -205,7 +266,14 @@ def train_multitask(args):
 
             optimizer.zero_grad()
             logits = model.predict_sentiment(b_ids, b_mask)
+            
+
+            #calculate individual loss
             loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+
+            #calculate custom loss between two embeddings
+            loss += model.compute_simsce(b_ids, b_mask)
+
 
             loss.backward()
             optimizer.step()
@@ -217,6 +285,7 @@ def train_multitask(args):
 
         train_acc, train_f1, *_ = model_eval_sst(sst_train_dataloader, model, device)
         dev_acc, dev_f1, *_ = model_eval_sst(sst_dev_dataloader, model, device)
+        train_acc
 
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
