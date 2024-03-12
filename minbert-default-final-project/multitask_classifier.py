@@ -74,8 +74,10 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
+
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
-        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
+        self.similarity_classifier = nn.Linear(4 * BERT_HIDDEN_SIZE, 1)
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
 
@@ -107,6 +109,8 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
+        
+
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
 
         pooled_output_anchor = outputs['pooler_output']
@@ -226,7 +230,7 @@ def train_multitask(args):
     #train (141,506 examples)
     #dev (20,215 examples)
     #test (40,431 examples)
-    para_train_data = SentencePairTestDataset(para_train_data, args)
+    para_train_data = SentencePairDataset(para_train_data, args)
     para_dev_data = SentencePairDataset(para_dev_data, args)
 
     para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
@@ -237,7 +241,7 @@ def train_multitask(args):
     #train (6,041 examples)
     #dev (864 examples)
     #test (1,726 examples)
-    sts_train_data = SentencePairTestDataset(sts_train_data, args)
+    sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
     sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
@@ -245,9 +249,9 @@ def train_multitask(args):
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                         collate_fn=sts_dev_data.collate_fn)
 
-    sst_iter = cycle(sst_train_dataloader)
-    sts_iter = cycle(sts_train_dataloader)
-    para_iter = para_train_dataloader
+    sst_iter = iter(cycle(sst_train_dataloader))  # Cycling if needed
+    sts_iter = iter(cycle(sts_train_dataloader))  # Cycling if needed
+    para_iter = iter(para_train_dataloader)
     num_batches = len(para_train_dataloader)
 
     # Init model.
@@ -264,14 +268,13 @@ def train_multitask(args):
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_acc_para, best_dev_acc_sst, best_dev_acc_sts = 0, 0, 0
 
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
-        for _ in range(num_batches):
+        for _ in tqdm(range(num_batches), desc=f'Training Epoch {epoch}', disable=TQDM_DISABLE):
             sst = next(sst_iter)
             sts = next(sts_iter)
             para = next(para_iter)
@@ -298,6 +301,7 @@ def train_multitask(args):
             b_labels = b_labels.to(torch.float32)
             sts_loss = F.mse_loss(logits, b_labels.view(-1))
 
+
             b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (
                     para["token_ids_1"],
                     para["attention_mask_1"],
@@ -305,6 +309,7 @@ def train_multitask(args):
                     para["attention_mask_2"],
                     para["labels"],
                 )
+
 
             b_ids_1 = b_ids_1.to(device)
             b_mask_1 = b_mask_1.to(device)
@@ -315,7 +320,7 @@ def train_multitask(args):
             b_labels = b_labels.to(device)
 
             logits = model.predict_paraphrase(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-            para_loss = F.cross_entropy(logits, b_labels.view(-1))
+            para_loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
             #SST TRAINING
             b_ids, b_mask, b_labels = (sst["token_ids"], sst["attention_mask"], sst["labels"])
