@@ -76,7 +76,7 @@ class MultitaskBERT(nn.Module):
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
 
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
-        self.similarity_classifier = nn.Linear(4 * BERT_HIDDEN_SIZE, 1)
+        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
