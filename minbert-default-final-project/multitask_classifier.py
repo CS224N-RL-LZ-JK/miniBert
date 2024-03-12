@@ -75,8 +75,8 @@ class MultitaskBERT(nn.Module):
         # You will want to add layers here to perform the downstream tasks.
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
 
-        self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
-        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*4, 1)
+        #self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
+        #self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*4, 1)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -177,7 +177,7 @@ class MultitaskBERT(nn.Module):
 
         outputs = torch.cat((outputs_1, outputs_2), dim=1)
 
-        return self.paraphrase_classifier(outputs)
+        return outputs
 
 
     def predict_similarity(self,
@@ -192,7 +192,7 @@ class MultitaskBERT(nn.Module):
         outputs_2 = outputs_2['pooler_output']
         combined_features = torch.cat((outputs_1, outputs_2, torch.abs(outputs_1 - outputs_2), outputs_1 * outputs_2), dim=1)
 
-        return self.similarity_classifier(combined_features)
+        return combined_features
 
 
 
@@ -302,7 +302,7 @@ def train_multitask(args):
             b_labels = b_labels.to(device)
 
             logits = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-            b_labels = b_labels.to(torch.float32)
+            b_labels = b_labels.to(device)
             sts_loss = F.mse_loss(logits, b_labels.view(-1))
 
 
