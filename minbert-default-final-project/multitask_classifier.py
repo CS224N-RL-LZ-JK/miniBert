@@ -256,7 +256,7 @@ def train_multitask(args):
 
     sst_iter = iter(cycle(sst_train_dataloader))  # Cycling if needed
     sts_iter = iter(cycle(sts_train_dataloader))  # Cycling if needed
-    para_iter = iter(para_train_dataloader)
+    para_iter = iter(cycle(para_train_dataloader)) # Cycling if needed
     num_batches = len(para_train_dataloader)
 
     # Init model.
