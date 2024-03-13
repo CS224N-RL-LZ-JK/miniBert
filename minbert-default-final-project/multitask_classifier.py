@@ -76,7 +76,8 @@ class MultitaskBERT(nn.Module):
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
 
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE*2, 1)
-        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*2, 1) #could be 2
+        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*2, 1)
+
         # SENTIMENT
         self.sentiment_linear = torch.nn.Linear(config.hidden_size, config.hidden_size)
         self.sentiment_linear1 = torch.nn.Linear(config.hidden_size, config.hidden_size)
@@ -84,10 +85,6 @@ class MultitaskBERT(nn.Module):
         self.sentiment_linear_out = nn.Linear(config.hidden_size, N_SENTIMENT_CLASSES)
 
         # PARAPHRASE
-        self.paraphrase_linear = nn.Linear(config.hidden_size, config.hidden_size)
-        self.paraphrase_linear1 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
-        self.paraphrase_linear2 = torch.nn.Linear(config.hidden_size, config.hidden_size)
-        self.paraphrase_out = torch.nn.Linear(config.hidden_size, 2)
 
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -169,27 +166,21 @@ class MultitaskBERT(nn.Module):
         outputs_1 = outputs_1['pooler_output']
         outputs_2 = outputs_2['pooler_output']
 
-        combined_bert_embeddings_1 = self.paraphrase_linear(outputs_1)
-        combined_bert_embeddings_2 = self.paraphrase_linear(outputs_2)
+        
 
         # Calculate absolute difference and sum of combined embeddings
-        abs_diff = torch.abs(combined_bert_embeddings_1 - combined_bert_embeddings_2)
-        abs_sum = torch.abs(combined_bert_embeddings_1 + combined_bert_embeddings_2)
+        abs_diff = torch.abs(outputs_1 - outputs_2)
+        abs_sum = torch.abs(outputs_1 + outputs_2)
 
         # Concatenate the absolute difference and sum
         concatenated_features = torch.cat((abs_diff, abs_sum), dim=1)
 
-        # Apply linear layers to obtain logits for both "yes" and "no" predictions
-        logits = F.relu(self.paraphrase_linear1(concatenated_features))
-        logits = F.relu(self.paraphrase_linear2(logits))
-        logits = self.paraphrase_out(logits)
+       
+        logits = self.paraphrase_classifier(concatenated_features)
 
         return logits
 
     
-
-        return outputs
-
 
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
@@ -335,7 +326,10 @@ def train_multitask(args):
             b_labels = b_labels.to(device)
 
             logits = model.predict_paraphrase(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-            para_loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+            logits = (logits.squeeze(-1).float())
+            print(logits)
+            para_loss = F.binary_cross_entropy_with_logits(logits, b_labels.float(), reduction='sum') / args.batch_size
+
 
             #SST TRAINING
             b_ids, b_mask, b_labels = (sst["token_ids"], sst["attention_mask"], sst["labels"])
