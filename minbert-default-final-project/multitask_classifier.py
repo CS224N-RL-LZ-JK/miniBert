@@ -75,8 +75,20 @@ class MultitaskBERT(nn.Module):
         # You will want to add layers here to perform the downstream tasks.
         self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
 
-        #self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE, 1)
-        #self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*4, 1)
+        self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE*2, 1)
+        self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE*2, 1) #could be 2
+        # SENTIMENT
+        self.sentiment_linear = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.sentiment_linear1 = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.sentiment_linear2 = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.sentiment_linear_out = nn.Linear(config.hidden_size, N_SENTIMENT_CLASSES)
+
+        # PARAPHRASE
+        self.paraphrase_linear = nn.Linear(config.hidden_size, config.hidden_size)
+        self.paraphrase_linear1 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.paraphrase_linear2 = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.paraphrase_out = torch.nn.Linear(config.hidden_size, 2)
+
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -90,14 +102,8 @@ class MultitaskBERT(nn.Module):
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         pooled_output = outputs['pooler_output']
         # additional layers
-        if self.task == 'sentiment':
-            return self.sentiment_classifier(pooled_output)
-        elif self.task == 'paraphrase':
-            return self.paraphrase_classifier(pooled_output)
-        elif self.task == 'similarity':
-            return self.similarity_classifier(pooled_output)
-        else:
-            return pooled_output
+        
+        return pooled_output
 
 
 
@@ -109,14 +115,17 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        
-
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
 
-        pooled_output_anchor = outputs['pooler_output']
+        bert_embedding = outputs['pooler_output']
+        logits = F.relu(self.sentiment_linear(bert_embedding))
+        logits = F.relu(self.sentiment_linear1(logits))
+        logits = F.relu(self.sentiment_linear2(logits))
+        logits = self.sentiment_linear_out(logits)
 
-        return self.sentiment_classifier(pooled_output_anchor)
-    
+        
+
+        return logits
 
     def compute_simsce(self, input_ids, attention_mask):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
@@ -124,26 +133,10 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        outputs_anchor = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        outputs_dropout = self.dropout(outputs_anchor['pooler_output'])
-        loss = self.custom_loss(outputs_anchor, outputs_dropout)
-
-        return loss
-    
-    def custom_loss(embeddings_1, embeddings_2, temperature=0.05):
-        """
-        Computes the unsupervised SimCSE loss between two sets of embeddings.
-
-        Args:
-        - embeddings_1 (torch.Tensor): Tensor containing the first set of embeddings.
-        - embeddings_2 (torch.Tensor): Tensor containing the second set of embeddings.
-        - temperature (float): Scaling factor for the cosine similarity. Default is 0.05.
-
-        Returns:
-        - loss (torch.Tensor): SimCSE loss.
-        """
-
-        # Normalize embeddings
+        embeddings_1 = self.forward(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings_2 = self.dropout(embeddings_1)
+        temperature = 0.05
+       
         embeddings_1_normalized = torch.nn.functional.normalize(embeddings_1, p=2, dim=-1)
         embeddings_2_normalized = torch.nn.functional.normalize(embeddings_2, p=2, dim=-1)
 
@@ -160,6 +153,7 @@ class MultitaskBERT(nn.Module):
         loss = -torch.log(numerator / denominator).mean()
 
         return loss
+    
 
 
     def predict_paraphrase(self,
@@ -175,7 +169,24 @@ class MultitaskBERT(nn.Module):
         outputs_1 = outputs_1['pooler_output']
         outputs_2 = outputs_2['pooler_output']
 
-        outputs = torch.cat((outputs_1, outputs_2), dim=1)
+        combined_bert_embeddings_1 = self.paraphrase_linear(outputs_1)
+        combined_bert_embeddings_2 = self.paraphrase_linear(outputs_2)
+
+        # Calculate absolute difference and sum of combined embeddings
+        abs_diff = torch.abs(combined_bert_embeddings_1 - combined_bert_embeddings_2)
+        abs_sum = torch.abs(combined_bert_embeddings_1 + combined_bert_embeddings_2)
+
+        # Concatenate the absolute difference and sum
+        concatenated_features = torch.cat((abs_diff, abs_sum), dim=1)
+
+        # Apply linear layers to obtain logits for both "yes" and "no" predictions
+        logits = F.relu(self.paraphrase_linear1(concatenated_features))
+        logits = F.relu(self.paraphrase_linear2(logits))
+        logits = self.paraphrase_out(logits)
+
+        return logits
+
+    
 
         return outputs
 
@@ -190,9 +201,8 @@ class MultitaskBERT(nn.Module):
         outputs_2 = self.bert(input_ids=input_ids_2, attention_mask=attention_mask_2)
         outputs_1 = outputs_1['pooler_output']
         outputs_2 = outputs_2['pooler_output']
-        combined_features = torch.cat((outputs_1, outputs_2, torch.abs(outputs_1 - outputs_2), outputs_1 * outputs_2), dim=1)
-
-        return combined_features
+        combined_features = torch.cat((outputs_1, outputs_2), dim=1)
+        return self.similarity_classifier(combined_features)
 
 
 
@@ -302,8 +312,9 @@ def train_multitask(args):
             b_labels = b_labels.to(device)
 
             logits = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-            b_labels = b_labels.to(device)
-            sts_loss = F.mse_loss(logits, b_labels.view(-1))
+            b_labels = b_labels.to(torch.float32)
+
+            sts_loss = F.mse_loss(logits.squeeze(-1), b_labels.view(-1))
 
 
             b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (
@@ -347,10 +358,10 @@ def train_multitask(args):
             
             full_loss = weight_sst * (sst_loss + custom_loss) + weight_sts * sts_loss + weight_para * para_loss 
             
+            
             #clip gradients incase of exploding gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
-
-
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+            
             full_loss.backward()
             optimizer.step()
 
