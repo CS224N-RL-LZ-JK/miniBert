@@ -346,9 +346,9 @@ def train_multitask(args):
             
             #need to tune the weights for each dataset
             #randomizer with two free params
-            weight_sst = 1/3
-            weight_sts = 1/3
-            weight_para = 1/3
+            weight_sst = 0.5
+            weight_sts = 0.3
+            weight_para = 0.2
             
             full_loss = weight_sst * (sst_loss + custom_loss) + weight_sts * sts_loss + weight_para * para_loss 
             
